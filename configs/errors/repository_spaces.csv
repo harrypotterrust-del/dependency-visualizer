@@ -1,0 +1,4 @@
+key,value
+package,org.apache.commons:commons-lang3:3.14.0
+repository,https://repo1.maven.org/my repo
+test_mode,false

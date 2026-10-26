@@ -1,0 +1,4 @@
+key,value
+package,A
+repository,../../repos/missing.txt
+test_mode,true

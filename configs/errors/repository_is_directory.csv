@@ -1,0 +1,4 @@
+key,value
+package,A
+repository,../../repos
+test_mode,true

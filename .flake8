@@ -1,0 +1,8 @@
+[flake8]
+max-line-length = 80
+max-complexity = 10
+max-function-length = 40
+max-parameters-amount = 7
+max-returns-amount = 10
+docstring-convention = pep257
+exclude = .venv

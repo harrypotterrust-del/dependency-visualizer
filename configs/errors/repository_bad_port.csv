@@ -1,0 +1,4 @@
+key,value
+package,org.apache.commons:commons-lang3:3.14.0
+repository,http://localhost:port/maven2
+test_mode,false

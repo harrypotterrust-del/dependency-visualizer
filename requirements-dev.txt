@@ -1,0 +1,5 @@
+flake8
+flake8-docstrings
+flake8-functions
+pep8-naming
+pytest

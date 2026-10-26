@@ -1,0 +1,23 @@
+# Г2: виртуальное окружение (внутри бинарники Python)
+.venv/
+
+# Г3: служебные файлы Python и pytest
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Г4: артефакты сборки
+build/
+dist/
+*.egg-info/
+
+# Г1: архивы
+*.zip
+*.tar.gz
+
+# Г5: настройки редакторов
+.idea/
+.vscode/
+
+# Системные файлы macOS
+.DS_Store
