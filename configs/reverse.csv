@@ -1,0 +1,5 @@
+key,value
+package,D
+repository,../repos/reverse.txt
+test_mode,true
+filter,

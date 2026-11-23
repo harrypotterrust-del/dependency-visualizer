@@ -19,7 +19,7 @@ def test_success_prints_graph(write_config, capsys, monkeypatch):
     """После загрузки конфигурации печатаются связи графа."""
     graph = {"A": ["B"], "B": []}
     monkeypatch.setattr("depviz.cli.dependency_graph",
-                        lambda config: graph)
+                        lambda config, reverse=False: graph)
     code = main(["-c", write_config(build_rows())])
     captured = capsys.readouterr()
     assert code == EXIT_OK
@@ -40,7 +40,7 @@ def test_missing_default_config(tmp_path, monkeypatch, capsys):
 
 def test_dependency_error(write_config, capsys, monkeypatch):
     """Ошибка графа сообщается отдельно и даёт код 1."""
-    def fail(config):
+    def fail(config, reverse=False):
         raise ConfigError(["репозиторий недоступен"])
 
     monkeypatch.setattr("depviz.cli.dependency_graph", fail)

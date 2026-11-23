@@ -18,12 +18,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="depviz",
         description="Визуализатор графа зависимостей Maven "
-                    "(этап 3: рекурсивный DFS).",
+                    "(этап 4: обратные зависимости).",
     )
     parser.add_argument("-c", "--config", metavar="PATH",
                         default=DEFAULT_CONFIG,
                         help="путь к CSV-файлу конфигурации "
                              "(по умолчанию: %(default)s)")
+    parser.add_argument("--reverse", action="store_true",
+                        help="вывести пакеты, зависящие от заданного")
     return parser
 
 
@@ -48,7 +50,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report_errors(error)
         return EXIT_ERROR
     try:
-        graph = dependency_graph(config)
+        graph = dependency_graph(config, reverse=args.reverse)
     except ConfigError as error:
         report_errors(error)
         return EXIT_ERROR

@@ -92,17 +92,36 @@ def maven_dependencies(repository):
     return dependencies
 
 
-def dependency_graph(config):
-    """Построить граф из тестового файла или реального Maven."""
+def dependency_graph(config, reverse=False):
+    """Построить граф прямых или обратных зависимостей."""
     if config.test_mode:
         repository = read_test_repository(config.repository_path)
+        if reverse:
+            repository = invert_repository(repository)
         root = config.package
         dependencies = repository_dependencies(repository)
     else:
+        if reverse:
+            raise ConfigError([
+                "обратный поиск Maven доступен в тестовом режиме"
+            ])
         coordinates = parse_coordinates(config.package)
         root = resolve_version(config.repository, coordinates)
         dependencies = maven_dependencies(config.repository)
     return build_graph(root, dependencies, config.package_filter)
+
+
+def invert_repository(repository):
+    """Развернуть все связи полного тестового репозитория."""
+    inverted = OrderedDict((package, []) for package in repository)
+    for package, dependencies in repository.items():
+        for dependency in dependencies:
+            if dependency not in inverted:
+                raise ConfigError([
+                    f"пакет {dependency} отсутствует в репозитории"
+                ])
+            inverted[dependency].append(package)
+    return inverted
 
 
 def format_graph(graph):
