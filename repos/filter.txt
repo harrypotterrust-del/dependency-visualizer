@@ -1,0 +1,7 @@
+# SKIP и его потомок HIDDEN исключаются фильтром SKIP
+A: B SKIP C
+B: D
+C: D
+D:
+SKIP: HIDDEN
+HIDDEN:

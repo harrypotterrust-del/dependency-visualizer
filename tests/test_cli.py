@@ -1,4 +1,4 @@
-"""Тесты командной строки этапа 2."""
+"""Тесты командной строки этапа 3."""
 
 import os
 import subprocess
@@ -9,23 +9,21 @@ import pytest
 
 from depviz.cli import ERROR_PREFIX, EXIT_ERROR, EXIT_OK, main
 from depviz.errors import ConfigError
-from depviz.maven import Coordinates
 from samples import build_rows
 
 ARGPARSE_EXIT_CODE = 2
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_success_prints_direct_dependencies(
-        write_config, capsys, monkeypatch):
-    """После загрузки конфигурации печатаются прямые зависимости."""
-    dependencies = [Coordinates("g", "a", "1"), Coordinates("g", "b", "2")]
-    monkeypatch.setattr("depviz.cli.direct_dependencies",
-                        lambda config: dependencies)
+def test_success_prints_graph(write_config, capsys, monkeypatch):
+    """После загрузки конфигурации печатаются связи графа."""
+    graph = {"A": ["B"], "B": []}
+    monkeypatch.setattr("depviz.cli.dependency_graph",
+                        lambda config: graph)
     code = main(["-c", write_config(build_rows())])
     captured = capsys.readouterr()
     assert code == EXIT_OK
-    assert captured.out.splitlines() == ["g:a:1", "g:b:2"]
+    assert captured.out.splitlines() == ["A -> B", "B"]
     assert captured.err == ""
 
 
@@ -41,11 +39,11 @@ def test_missing_default_config(tmp_path, monkeypatch, capsys):
 
 
 def test_dependency_error(write_config, capsys, monkeypatch):
-    """Ошибка сети сообщается отдельно и даёт код 1."""
+    """Ошибка графа сообщается отдельно и даёт код 1."""
     def fail(config):
         raise ConfigError(["репозиторий недоступен"])
 
-    monkeypatch.setattr("depviz.cli.direct_dependencies", fail)
+    monkeypatch.setattr("depviz.cli.dependency_graph", fail)
     code = main(["-c", write_config(build_rows())])
     assert code == EXIT_ERROR
     assert "репозиторий недоступен" in capsys.readouterr().err

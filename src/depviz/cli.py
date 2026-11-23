@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from depviz.config import DEFAULT_CONFIG, load_config
 from depviz.errors import ConfigError
-from depviz.maven import direct_dependencies
+from depviz.graph import dependency_graph, format_graph
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="depviz",
         description="Визуализатор графа зависимостей Maven "
-                    "(этап 2: прямые зависимости).",
+                    "(этап 3: рекурсивный DFS).",
     )
     parser.add_argument("-c", "--config", metavar="PATH",
                         default=DEFAULT_CONFIG,
@@ -48,12 +48,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         report_errors(error)
         return EXIT_ERROR
     try:
-        if config.test_mode:
-            raise ConfigError(["тестовый репозиторий поддерживается с этапа 3"])
-        dependencies = direct_dependencies(config)
+        graph = dependency_graph(config)
     except ConfigError as error:
         report_errors(error)
         return EXIT_ERROR
-    for dependency in dependencies:
-        print(dependency)
+    print(format_graph(graph))
     return EXIT_OK
