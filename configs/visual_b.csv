@@ -1,0 +1,5 @@
+key,value
+package,B
+repository,../repos/simple.txt
+test_mode,true
+filter,

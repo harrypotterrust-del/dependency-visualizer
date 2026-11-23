@@ -1,12 +1,14 @@
-"""Интерфейс командной строки: разбор аргументов и вывод параметров."""
+"""Интерфейс командной строки анализа и визуализации зависимостей."""
 
 import argparse
 import sys
+import webbrowser
 from typing import List, Optional
 
 from depviz.config import DEFAULT_CONFIG, load_config
 from depviz.errors import ConfigError
 from depviz.graph import dependency_graph, format_graph
+from depviz.plantuml import plantuml_text, render_svg
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -18,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="depviz",
         description="Визуализатор графа зависимостей Maven "
-                    "(этап 4: обратные зависимости).",
+                    "(этап 5: PlantUML).",
     )
     parser.add_argument("-c", "--config", metavar="PATH",
                         default=DEFAULT_CONFIG,
@@ -26,6 +28,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "(по умолчанию: %(default)s)")
     parser.add_argument("--reverse", action="store_true",
                         help="вывести пакеты, зависящие от заданного")
+    parser.add_argument("--plantuml", action="store_true",
+                        help="дополнительно вывести текст PlantUML")
+    parser.add_argument("--visualize", nargs="?", metavar="SVG",
+                        const="build/dependencies.svg",
+                        help="сохранить SVG и открыть его в браузере")
     return parser
 
 
@@ -35,24 +42,29 @@ def report_errors(error: ConfigError) -> None:
         print(f"{ERROR_PREFIX}{message}", file=sys.stderr)
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    """Запустить программу и вернуть код завершения.
+def visualize(graph, output_path):
+    """Сохранить изображение и открыть его штатным браузером."""
+    source, path = render_svg(graph, output_path)
+    print(source)
+    print(f"Изображение сохранено: {path}")
+    webbrowser.open(path.resolve().as_uri())
 
-    ``argv`` - аргументы без имени программы; по умолчанию берутся
-    настоящие аргументы процесса. При успехе параметры печатаются
-    в stdout (код 0), при ошибке конфигурации сообщения идут в stderr
-    (код 1). Ошибки самих аргументов argparse завершает с кодом 2.
-    """
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Запустить анализ и вернуть код завершения."""
     args = build_parser().parse_args(argv)
     try:
         config = load_config(args.config)
-    except ConfigError as error:
-        report_errors(error)
-        return EXIT_ERROR
-    try:
         graph = dependency_graph(config, reverse=args.reverse)
-    except ConfigError as error:
-        report_errors(error)
+        print(format_graph(graph))
+        if args.plantuml and not args.visualize:
+            print(plantuml_text(graph))
+        if args.visualize:
+            visualize(graph, args.visualize)
+    except (ConfigError, OSError, ValueError) as error:
+        if isinstance(error, ConfigError):
+            report_errors(error)
+        else:
+            print(f"{ERROR_PREFIX}{error}", file=sys.stderr)
         return EXIT_ERROR
-    print(format_graph(graph))
     return EXIT_OK

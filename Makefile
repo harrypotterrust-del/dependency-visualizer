@@ -18,3 +18,4 @@ check: lint test
 demo:
 	./scripts/demo_ok.sh
 	./scripts/demo_errors.sh
+	./scripts/demo_visual.sh
