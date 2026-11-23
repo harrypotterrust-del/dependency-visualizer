@@ -4,8 +4,9 @@ import argparse
 import sys
 from typing import List, Optional
 
-from depviz.config import DEFAULT_CONFIG, format_config, load_config
+from depviz.config import DEFAULT_CONFIG, load_config
 from depviz.errors import ConfigError
+from depviz.maven import direct_dependencies
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -16,8 +17,8 @@ def build_parser() -> argparse.ArgumentParser:
     """Создать разборщик аргументов командной строки."""
     parser = argparse.ArgumentParser(
         prog="depviz",
-        description="Визуализатор графа зависимостей пакетного менеджера "
-                    "(этап 1: чтение и проверка конфигурации).",
+        description="Визуализатор графа зависимостей Maven "
+                    "(этап 2: прямые зависимости).",
     )
     parser.add_argument("-c", "--config", metavar="PATH",
                         default=DEFAULT_CONFIG,
@@ -46,5 +47,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     except ConfigError as error:
         report_errors(error)
         return EXIT_ERROR
-    print(format_config(config))
+    try:
+        if config.test_mode:
+            raise ConfigError(["тестовый репозиторий поддерживается с этапа 3"])
+        dependencies = direct_dependencies(config)
+    except ConfigError as error:
+        report_errors(error)
+        return EXIT_ERROR
+    for dependency in dependencies:
+        print(dependency)
     return EXIT_OK
