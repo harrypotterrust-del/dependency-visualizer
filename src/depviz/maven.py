@@ -1,6 +1,8 @@
-"""Получение прямых зависимостей из Maven POM стандартными средствами."""
+"""Получение зависимостей из Maven POM стандартными средствами."""
 
+from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Dict, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
@@ -12,16 +14,46 @@ DEFAULT_VERSION = "LATEST"
 
 
 @dataclass(frozen=True)
+class Exclusion:
+    """Исключение транзитивной зависимости Maven."""
+
+    group: str
+    artifact: str
+
+    def matches(self, coordinates):
+        """Проверить координаты с учётом Maven wildcard."""
+        return (self.group in ("*", coordinates.group)
+                and self.artifact in ("*", coordinates.artifact))
+
+
+@dataclass(frozen=True)
 class Coordinates:
-    """Координаты артефакта Maven."""
+    """Координаты артефакта Maven и накопленные исключения."""
 
     group: str
     artifact: str
     version: str
+    exclusions: Tuple[Exclusion, ...] = ()
+    optional: bool = False
+
+    @property
+    def key(self):
+        """Вернуть идентификатор артефакта без версии."""
+        return self.group, self.artifact
 
     def __str__(self):
         """Вернуть привычную запись group:artifact:version."""
         return f"{self.group}:{self.artifact}:{self.version}"
+
+
+@dataclass
+class EffectiveModel:
+    """Свойства, управление версиями и зависимости effective POM."""
+
+    root: ElementTree.Element
+    properties: Dict[str, str]
+    managed: Dict[str, str]
+    dependencies: list
 
 
 def parse_coordinates(value):
@@ -38,11 +70,15 @@ def local_name(tag):
 
 def children(element, name):
     """Найти непосредственных потомков по имени без namespace."""
+    if element is None:
+        return []
     return [item for item in element if local_name(item.tag) == name]
 
 
 def child(element, name):
     """Найти первого непосредственного потомка."""
+    if element is None:
+        return None
     matches = children(element, name)
     return matches[0] if matches else None
 
@@ -75,22 +111,23 @@ def download(url):
         raise ConfigError([f"не удалось получить {url}: {reason}"])
 
 
-def parse_pom(text):
-    """Извлечь координаты прямых compile/runtime зависимостей из POM."""
+def parse_xml(text, description="POM"):
+    """Разобрать XML и превратить ошибку синтаксиса в ConfigError."""
     try:
-        root = ElementTree.fromstring(text)
+        return ElementTree.fromstring(text)
     except ElementTree.ParseError as error:
-        raise ConfigError([f"некорректный POM XML: {error}"])
-    properties = read_properties(root)
-    dependencies = child(root, "dependencies")
-    if dependencies is None:
-        return []
-    result = []
-    for item in children(dependencies, "dependency"):
-        dependency = parse_dependency(item, properties)
-        if dependency is not None:
-            result.append(dependency)
-    return result
+        raise ConfigError([f"некорректный {description} XML: {error}"])
+
+
+def read_custom_properties(root):
+    """Прочитать только секцию properties POM."""
+    properties = {}
+    section = child(root, "properties")
+    if section is not None:
+        for item in section:
+            if item.text:
+                properties[local_name(item.tag)] = item.text.strip()
+    return properties
 
 
 def read_properties(root):
@@ -100,16 +137,12 @@ def read_properties(root):
         "project.artifactId": child_text(root, "artifactId"),
         "project.version": child_text(root, "version"),
     }
-    section = child(root, "properties")
-    if section is not None:
-        for item in section:
-            if item.text:
-                properties[local_name(item.tag)] = item.text.strip()
+    properties.update(read_custom_properties(root))
     return properties
 
 
 def substitute(value, properties):
-    """Подставить простые Maven-переменные вида ${name}."""
+    """Подставить Maven-переменные вида ${name}."""
     result = value
     for _ in range(len(properties) + 1):
         changed = False
@@ -123,47 +156,81 @@ def substitute(value, properties):
     return result
 
 
+def read_exclusions(element):
+    """Прочитать исключения транзитивных зависимостей."""
+    result = []
+    section = child(element, "exclusions")
+    for item in children(section, "exclusion"):
+        group = child_text(item, "groupId", "*")
+        artifact = child_text(item, "artifactId", "*")
+        result.append(Exclusion(group, artifact))
+    return tuple(result)
+
+
+def unresolved(value):
+    """Проверить, осталась ли в значении неразрешённая переменная."""
+    return not value or "${" in value
+
+
 def parse_dependency(element, properties, managed=None):
-    """Разобрать dependency, пропустив optional/test/provided/system."""
-    scope = child_text(element, "scope", "compile")
-    optional = child_text(element, "optional", "false")
-    if scope not in ("compile", "runtime") or optional == "true":
+    """Разобрать compile/runtime dependency, optional и exclusions."""
+    scope = substitute(child_text(element, "scope", "compile"), properties)
+    optional = substitute(child_text(element, "optional", "false"),
+                          properties).lower()
+    if scope not in ("compile", "runtime"):
         return None
-    values = [child_text(element, name) for name in
-              ("groupId", "artifactId", "version")]
-    values = [substitute(value, properties) for value in values]
+    values = [substitute(child_text(element, name), properties)
+              for name in ("groupId", "artifactId", "version")]
     managed = managed or {}
     if not values[2]:
         values[2] = managed.get(":".join(values[:2]), "")
-    if not all(values) or any("${" in value for value in values):
-        return None
-    return Coordinates(*values)
+    if any(unresolved(value) for value in values[:2]):
+        raise ConfigError([
+            "не удалось разрешить координаты зависимости: "
+            + ":".join(values)
+        ])
+    if unresolved(values[2]):
+        raise ConfigError([
+            f"не указана версия зависимости {values[0]}:{values[1]}"
+        ])
+    return Coordinates(*values, exclusions=read_exclusions(element),
+                       optional=optional == "true")
 
 
 def managed_dependencies(root, properties):
-    """Прочитать версии из dependencyManagement текущего POM."""
+    """Прочитать неимпортированные версии dependencyManagement."""
     management = child(root, "dependencyManagement")
-    dependencies = child(management, "dependencies") if management else None
+    dependencies = child(management, "dependencies")
     result = {}
-    if dependencies is not None:
-        for item in children(dependencies, "dependency"):
-            values = [child_text(item, name) for name in
-                      ("groupId", "artifactId", "version")]
-            values = [substitute(value, properties) for value in values]
-            if all(values):
-                result[":".join(values[:2])] = values[2]
-    return result
+    imports = []
+    for item in children(dependencies, "dependency"):
+        values = [substitute(child_text(item, name), properties)
+                  for name in ("groupId", "artifactId", "version")]
+        scope = substitute(child_text(item, "scope"), properties)
+        packaging = substitute(child_text(item, "type", "jar"), properties)
+        if scope == "import" and packaging == "pom":
+            if any(unresolved(value) for value in values):
+                raise ConfigError([
+                    "не удалось разрешить координаты импортированного BOM: "
+                    + ":".join(values)
+                ])
+            imports.append(Coordinates(*values))
+        elif all(not unresolved(value) for value in values):
+            result[":".join(values[:2])] = values[2]
+    return result, imports
 
 
-def parent_coordinates(root, properties):
+def parent_coordinates(root, properties=None):
     """Получить координаты родителя, если он указан."""
     parent = child(root, "parent")
     if parent is None:
         return None
-    values = [child_text(parent, name) for name in
-              ("groupId", "artifactId", "version")]
-    values = [substitute(value, properties) for value in values]
-    return Coordinates(*values) if all(values) else None
+    properties = properties or read_properties(root)
+    values = [substitute(child_text(parent, name), properties)
+              for name in ("groupId", "artifactId", "version")]
+    if any(unresolved(value) for value in values):
+        raise ConfigError(["не удалось разрешить координаты parent POM"])
+    return Coordinates(*values)
 
 
 def metadata_url(repository, coordinates):
@@ -177,8 +244,8 @@ def resolve_version(repository, coordinates):
     """Разрешить отсутствующую версию через maven-metadata.xml."""
     if coordinates.version != DEFAULT_VERSION:
         return coordinates
-    root = ElementTree.fromstring(download(metadata_url(repository,
-                                                        coordinates)))
+    root = parse_xml(download(metadata_url(repository, coordinates)),
+                     "maven-metadata")
     versioning = child(root, "versioning")
     version = child_text(versioning, "release")
     version = version or child_text(versioning, "latest")
@@ -187,33 +254,119 @@ def resolve_version(repository, coordinates):
     return Coordinates(coordinates.group, coordinates.artifact, version)
 
 
-def load_model(repository, coordinates):
-    """Загрузить POM и объединить свойства и версии его родителей."""
+def model_properties(roots):
+    """Объединить свойства родителей и унаследованные координаты проекта."""
+    properties = {}
+    for root in reversed(roots):
+        properties.update(read_custom_properties(root))
+        parent = child(root, "parent")
+        group = child_text(root, "groupId") or child_text(parent, "groupId")
+        version = child_text(root, "version") or child_text(parent, "version")
+        artifact = child_text(root, "artifactId")
+        parent_group = child_text(parent, "groupId")
+        parent_version = child_text(parent, "version")
+        values = {
+            "project.groupId": group,
+            "pom.groupId": group,
+            "groupId": group,
+            "project.artifactId": artifact,
+            "pom.artifactId": artifact,
+            "artifactId": artifact,
+            "project.version": version,
+            "pom.version": version,
+            "version": version,
+            "project.parent.groupId": parent_group,
+            "project.parent.version": parent_version,
+        }
+        properties.update({key: value for key, value in values.items()
+                           if value})
+        for key, value in list(properties.items()):
+            properties[key] = substitute(value, properties)
+    return properties
+
+
+def load_parent_chain(repository, coordinates):
+    """Загрузить цепочку POM от анализируемого пакета к предкам."""
     roots = []
     current = coordinates
     while current is not None:
-        url = pom_url(repository, current)
-        root = ElementTree.fromstring(download(url))
-        roots.append(root)
-        current = parent_coordinates(root, read_properties(root))
-    properties = {}
+        if current.key + (current.version,) in [
+                item.key + (item.version,) for item, _ in roots]:
+            raise ConfigError([f"цикл parent POM у {current}"])
+        root = parse_xml(download(pom_url(repository, current)))
+        roots.append((current, root))
+        current = parent_coordinates(root)
+    return roots
+
+
+def effective_management(repository, roots, properties, cache, loading):
+    """Объединить dependencyManagement предков и импортированные BOM."""
     managed = {}
-    for root in reversed(roots):
-        properties.update(read_properties(root))
-        managed.update(managed_dependencies(root, properties))
-    return roots[0], properties, managed
+    for _, root in reversed(roots):
+        own, imports = managed_dependencies(root, properties)
+        for bom in imports:
+            model = load_effective_model(repository, bom, cache, loading)
+            managed.update(model.managed)
+        managed.update(own)
+    return managed
+
+
+def effective_dependencies(roots, properties, managed):
+    """Унаследовать зависимости, заменяя родительские версии дочерними."""
+    dependencies = OrderedDict()
+    for _, root in reversed(roots):
+        section = child(root, "dependencies")
+        for item in children(section, "dependency"):
+            dependency = parse_dependency(item, properties, managed)
+            if dependency is not None:
+                dependencies[dependency.key] = dependency
+    return list(dependencies.values())
+
+
+def load_effective_model(repository, coordinates, cache=None, loading=None):
+    """Загрузить effective POM с родителями, BOM и зависимостями."""
+    cache = cache if cache is not None else {}
+    loading = loading if loading is not None else set()
+    cache_key = (repository, str(coordinates))
+    if cache_key in cache:
+        return cache[cache_key]
+    if cache_key in loading:
+        raise ConfigError([f"цикл parent/BOM POM у {coordinates}"])
+    loading.add(cache_key)
+    try:
+        roots = load_parent_chain(repository, coordinates)
+        properties = model_properties([root for _, root in roots])
+        managed = effective_management(repository, roots, properties,
+                                       cache, loading)
+        dependencies = effective_dependencies(roots, properties, managed)
+        model = EffectiveModel(roots[0][1], properties, managed, dependencies)
+        cache[cache_key] = model
+        return model
+    finally:
+        loading.remove(cache_key)
+
+
+def load_model(repository, coordinates):
+    """Загрузить POM и объединить свойства и версии его родителей."""
+    model = load_effective_model(repository, coordinates)
+    return model.root, model.properties, model.managed
 
 
 def direct_dependencies(config):
     """Загрузить POM корневого пакета и вернуть прямые зависимости."""
     coordinates = parse_coordinates(config.package)
     coordinates = resolve_version(config.repository, coordinates)
-    root, properties, managed = load_model(config.repository, coordinates)
-    section = child(root, "dependencies")
-    if section is None:
-        return []
+    return load_effective_model(config.repository, coordinates).dependencies
+
+
+def parse_pom(text):
+    """Извлечь координаты прямых compile/runtime зависимостей из POM."""
+    root = parse_xml(text)
+    properties = read_properties(root)
+    managed, _ = managed_dependencies(root, properties)
+    dependencies = child(root, "dependencies")
     result = []
-    for item in children(section, "dependency"):
+    for item in children(dependencies, "dependency"):
         dependency = parse_dependency(item, properties, managed)
         if dependency is not None:
             result.append(dependency)

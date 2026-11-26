@@ -2,10 +2,11 @@
 
 import re
 from collections import OrderedDict
+from dataclasses import replace
 
 from depviz.errors import ConfigError
-from depviz.maven import load_model, parse_coordinates, parse_dependency
-from depviz.maven import child, children, resolve_version
+from depviz.maven import (load_effective_model, parse_coordinates,
+                          resolve_version)
 
 PACKAGE_LINE = re.compile(r"([A-Z]+):(?:\s+([A-Z]+(?:\s+[A-Z]+)*))?\s*$")
 
@@ -75,40 +76,109 @@ def repository_dependencies(repository):
     return dependencies
 
 
-def maven_dependencies(repository):
-    """Вернуть функцию получения зависимостей Maven по координатам."""
-    def dependencies(package):
-        """Получить прямые зависимости одного Maven-пакета."""
-        root, properties, managed = load_model(repository, package)
-        section = child(root, "dependencies")
-        if section is None:
-            return []
+class MavenGraphBuilder:
+    """Рекурсивный DFS с Maven nearest-wins и наследованием exclusions."""
+
+    def __init__(self, repository, package_filter):
+        """Создать пустые кэши и состояние обхода."""
+        self.repository = repository
+        self.package_filter = package_filter
+        self.root = None
+        self.managed = {}
+        self.model_cache = {}
+        self.dependency_cache = {}
+        self.selected = {}
+        self.depths = {}
+        self.result = OrderedDict()
+        self.emitted = set()
+
+    def direct(self, package):
+        """Получить зависимости и передать им накопленные exclusions."""
+        key = str(package)
+        if key not in self.dependency_cache:
+            model = load_effective_model(self.repository, package,
+                                         self.model_cache)
+            self.dependency_cache[key] = model.dependencies
         result = []
-        for item in children(section, "dependency"):
-            dependency = parse_dependency(item, properties, managed)
-            if dependency is not None:
-                result.append(dependency)
+        for dependency in self.dependency_cache[key]:
+            if package.key != self.root.key and dependency.optional:
+                continue
+            if any(item.matches(dependency) for item in package.exclusions):
+                continue
+            exclusions = package.exclusions + tuple(
+                item for item in dependency.exclusions
+                if item not in package.exclusions
+            )
+            version = self.managed.get(":".join(dependency.key),
+                                       dependency.version)
+            result.append(replace(dependency, version=version,
+                                  exclusions=exclusions))
         return result
-    return dependencies
+
+    def allowed(self, package):
+        """Проверить пользовательский фильтр координат."""
+        return (not self.package_filter
+                or self.package_filter not in filter_name(package))
+
+    def select(self, package, depth):
+        """Выбрать первую ближайшую версию каждого groupId:artifactId."""
+        key = package.key
+        if key in self.depths and self.depths[key] <= depth:
+            return
+        self.selected[key] = package
+        self.depths[key] = depth
+        for dependency in self.direct(package):
+            if self.allowed(dependency):
+                self.select(dependency, depth + 1)
+
+    def emit(self, package):
+        """Вывести выбранные узлы в порядке рекурсивного DFS."""
+        if package.key in self.emitted:
+            return
+        self.emitted.add(package.key)
+        dependencies = []
+        seen = set()
+        for dependency in self.direct(package):
+            if dependency.key in self.selected and dependency.key not in seen:
+                seen.add(dependency.key)
+                dependencies.append(self.selected[dependency.key])
+        self.result[package] = dependencies
+        for dependency in dependencies:
+            self.emit(dependency)
+
+    def build(self, root):
+        """Сначала выбрать версии, затем построить достижимый граф."""
+        self.root = root
+        model = load_effective_model(self.repository, root, self.model_cache)
+        self.managed = model.managed
+        self.select(root, 0)
+        self.emit(root)
+        return self.result
+
+
+def build_maven_graph(repository, root, package_filter=""):
+    """Построить Maven-граф рекурсивным DFS с nearest-wins mediation."""
+    if package_filter and package_filter in filter_name(root):
+        raise ConfigError([f"корневой пакет {root} исключён фильтром"])
+    return MavenGraphBuilder(repository, package_filter).build(root)
 
 
 def dependency_graph(config, reverse=False):
     """Построить граф прямых или обратных зависимостей."""
-    if config.test_mode:
-        repository = read_test_repository(config.repository_path)
-        if reverse:
-            repository = invert_repository(repository)
-        root = config.package
-        dependencies = repository_dependencies(repository)
-    else:
+    if not config.test_mode:
         if reverse:
             raise ConfigError([
                 "обратный поиск Maven доступен в тестовом режиме"
             ])
         coordinates = parse_coordinates(config.package)
         root = resolve_version(config.repository, coordinates)
-        dependencies = maven_dependencies(config.repository)
-    return build_graph(root, dependencies, config.package_filter)
+        return build_maven_graph(config.repository, root,
+                                 config.package_filter)
+    repository = read_test_repository(config.repository_path)
+    if reverse:
+        repository = invert_repository(repository)
+    dependencies = repository_dependencies(repository)
+    return build_graph(config.package, dependencies, config.package_filter)
 
 
 def invert_repository(repository):

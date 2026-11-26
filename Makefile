@@ -2,7 +2,7 @@ PYTHON ?= python3
 export PYTHON
 export PYTHONPATH := src
 
-.PHONY: run test lint check demo
+.PHONY: run test lint check demo demo-maven
 
 run:
 	$(PYTHON) -m depviz $(ARGS)
@@ -19,3 +19,6 @@ demo:
 	./scripts/demo_ok.sh
 	./scripts/demo_errors.sh
 	./scripts/demo_visual.sh
+
+demo-maven:
+	./scripts/demo_maven.sh
